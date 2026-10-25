@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Maximize, Minimize, Pause, Play, RotateCcw } from 'lucide-react';
 import LanderScene, {
   estimateImpactTime,
+  isGroundVisible,
   type Flight,
   type Phase,
 } from '@/components/LanderScene';
@@ -72,10 +73,15 @@ export default function FullscreenGame() {
   }));
   const [stats, setStats] = useState<PersonalStats>(readStats);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [viewport, setViewport] = useState(() => ({
+    width: window.innerWidth,
+    height: window.innerHeight,
+  }));
   const flightRef = useRef(snapshot.flight);
   const phaseRef = useRef<Phase>('ready');
   const keysRef = useRef({ up: false, left: false, right: false });
   const lastFrameRef = useRef(0);
+  const fullscreenRequestedRef = useRef(false);
 
   const enterFullscreen = useCallback(() => {
     if (document.fullscreenElement || !document.documentElement.requestFullscreen) return;
@@ -91,7 +97,10 @@ export default function FullscreenGame() {
     if (document.fullscreenElement) {
       void document.exitFullscreen().catch(() => undefined);
     } else {
-      enterFullscreen();
+      if (!fullscreenRequestedRef.current) {
+        fullscreenRequestedRef.current = true;
+        enterFullscreen();
+      }
     }
   }, [enterFullscreen]);
 
@@ -137,6 +146,13 @@ export default function FullscreenGame() {
   }, []);
 
   useEffect(() => {
+    const updateViewport = () =>
+      setViewport({ width: window.innerWidth, height: window.innerHeight });
+    window.addEventListener('resize', updateViewport);
+    return () => window.removeEventListener('resize', updateViewport);
+  }, []);
+
+  useEffect(() => {
     let frame = 0;
     let lastPublish = 0;
 
@@ -174,6 +190,7 @@ export default function FullscreenGame() {
 
       flight.vy += gravity * dt;
       flight.x += flight.vx * dt;
+      flight.x = ((flight.x % 100) + 100) % 100;
       flight.y += flight.vy * dt;
       flight.elapsed += dt;
       flight.maxSpeed = Math.max(flight.maxSpeed, Math.hypot(flight.vx, flight.vy));
@@ -182,7 +199,7 @@ export default function FullscreenGame() {
 
       let terminal: Phase | null = null;
       let message = '';
-      if (flight.x < 1 || flight.x > 99 || flight.y < -180) {
+      if (!Number.isFinite(flight.x) || !Number.isFinite(flight.y)) {
         terminal = 'crashed';
         message = 'LOST IN THE DARK';
       } else if (flight.y >= 54) {
@@ -316,6 +333,12 @@ export default function FullscreenGame() {
   const altitude = Math.max(0, (54 - flight.y) * 3.28084);
   const impact = estimateImpactTime(flight);
   const showImpact = phase === 'running' && flight.vy > 3.5 && impact !== null;
+  const groundVisible = isGroundVisible(flight, viewport.width, viewport.height);
+  const readoutLeft = Math.max(
+    12,
+    Math.min(viewport.width - 166, (flight.x / 100) * viewport.width + 28),
+  );
+  const readoutTop = Math.max(52, viewport.height * 0.14 - 12);
   const approachSafe =
     speed <= 15 &&
     Math.abs(angle) <= 12 &&
@@ -343,7 +366,7 @@ export default function FullscreenGame() {
 
   return (
     <main className="game-screen">
-      <LanderScene flightRef={flightRef} />
+      <LanderScene flightRef={flightRef} phase={phase} />
 
       <div className="top-hud">
         <div className="game-mark">
@@ -376,39 +399,73 @@ export default function FullscreenGame() {
         </div>
       </div>
 
-      <div className="flight-hud" aria-label="Flight instruments">
-        <div className="instrument instrument-left">
-          <span className="instrument-label">SPEED</span>
-          <strong className={approachSafe ? 'safe-value' : 'danger-value'}>
-            {speed.toFixed(1)} <small>MPH</small>
-          </strong>
-          <span className="angle-readout">
-            <span className="angle-pointer" style={{ transform: `rotate(${angle}deg)` }}>↑</span>
-            ANGLE <b>{angle}°</b>
-          </span>
+      {groundVisible ? (
+        <div
+          className="ship-readout"
+          aria-label="Flight instruments beside the lander"
+          style={{ left: `${readoutLeft}px`, top: `${readoutTop}px` }}
+        >
+          <div className="ship-readout-row">
+            <span>SPEED</span>
+            <strong className={approachSafe ? 'safe-value' : 'danger-value'}>
+              {speed.toFixed(1)} MPH
+            </strong>
+          </div>
+          <div className="ship-readout-row">
+            <span>ANGLE</span>
+            <strong className={approachSafe ? 'safe-value' : 'danger-value'}>
+              {angle}°
+            </strong>
+          </div>
+          <div className={`ship-readout-row ${showImpact ? 'impact-countdown' : ''}`}>
+            <span>{showImpact ? 'IMPACT IN' : 'FLIGHT TIME'}</span>
+            <strong>
+              {showImpact && impact !== null
+                ? `${impact.toFixed(1)} SEC`
+                : formatClock(flight.elapsed)}
+            </strong>
+          </div>
+          <div className="ship-readout-row">
+            <span>ALTITUDE</span>
+            <strong className={approachSafe ? 'safe-value' : 'danger-value'}>
+              {Math.round(altitude)} FT
+            </strong>
+          </div>
         </div>
+      ) : (
+        <div className="flight-hud" aria-label="Flight instruments">
+          <div className="instrument instrument-left">
+            <span className="instrument-label">SPEED</span>
+            <strong className={approachSafe ? 'safe-value' : 'danger-value'}>
+              {speed.toFixed(1)} <small>MPH</small>
+            </strong>
+            <span className="angle-readout">
+              ANGLE <b className={approachSafe ? 'safe-value' : 'danger-value'}>{angle}°</b>
+            </span>
+          </div>
 
-        <div className={`instrument instrument-center ${showImpact ? 'impact-countdown' : ''}`}>
-          <span className="instrument-label">
-            {showImpact ? 'IMPACT IN' : 'FLIGHT TIME'}
-          </span>
-          <strong>
-            {showImpact && impact !== null
-              ? `${impact.toFixed(1)} SEC`
-              : formatClock(flight.elapsed)}
-          </strong>
-        </div>
+          <div className={`instrument instrument-center ${showImpact ? 'impact-countdown' : ''}`}>
+            <span className="instrument-label">
+              {showImpact ? 'IMPACT IN' : 'FLIGHT TIME'}
+            </span>
+            <strong>
+              {showImpact && impact !== null
+                ? `${impact.toFixed(1)} SEC`
+                : formatClock(flight.elapsed)}
+            </strong>
+          </div>
 
-        <div className="instrument instrument-right">
-          <span className="instrument-label">ALTITUDE</span>
-          <strong className={approachSafe ? 'safe-value' : 'danger-value'}>
-            {Math.round(altitude)} <small>FT</small>
-          </strong>
-          <span className="angle-readout">
-            {flight.mode === 'daily' ? 'DAILY CROSSWIND' : 'LUNAR SURFACE'}
-          </span>
+          <div className="instrument instrument-right">
+            <span className="instrument-label">ALTITUDE</span>
+            <strong className={approachSafe ? 'safe-value' : 'danger-value'}>
+              {Math.round(altitude)} <small>FT</small>
+            </strong>
+            <span className="angle-readout">
+              {flight.mode === 'daily' ? 'DAILY CROSSWIND' : 'LUNAR SURFACE'}
+            </span>
+          </div>
         </div>
-      </div>
+      )}
 
       <div className="control-hint" aria-label="Keyboard controls">
         <kbd>←</kbd><kbd>→</kbd> ROTATE <span>·</span> <kbd>↑</kbd> THRUST

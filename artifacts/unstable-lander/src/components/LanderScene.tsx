@@ -40,8 +40,21 @@ const terrainProfile: Array<[number, number]> = [
 const clamp = (value: number, min: number, max: number) =>
   Math.max(min, Math.min(max, value));
 
+export const wrapHorizontalPosition = (x: number) => ((x % 100) + 100) % 100;
+
 const normalizedAngle = (angle: number) =>
   ((angle + 180) % 360 + 360) % 360 - 180;
+
+export function isGroundVisible(flight: Flight, width: number, height: number) {
+  const craftSize = clamp(width * 0.044, 22, 48);
+  const craftY = height * 0.14;
+  const terrainScale = Math.min(height, width * 0.195);
+  const groundY =
+    craftY +
+    craftSize * 0.54 +
+    ((54 - flight.y) * height) / 80;
+  return groundY - 0.17 * terrainScale < height;
+}
 
 export function estimateImpactTime(flight: Flight) {
   const distance = 54 - flight.y;
@@ -100,6 +113,8 @@ function drawScene(
   width: number,
   height: number,
   flight: Flight,
+  phase: Phase,
+  crashElapsed: number,
 ) {
   context.clearRect(0, 0, width, height);
   context.fillStyle = '#030712';
@@ -164,7 +179,7 @@ function drawScene(
     context.lineTo(padEnd, groundY);
     context.stroke();
     context.fillStyle = '#e4e7f1';
-    context.font = `${Math.max(9, width * 0.009)}px ui-monospace, monospace`;
+    context.font = `${Math.max(9, width * 0.009)}px "Space Grotesk", sans-serif`;
     context.textAlign = 'center';
     context.fillText('+0', (padStart + padEnd) / 2, groundY - 7);
   }
@@ -172,10 +187,8 @@ function drawScene(
   const forecast = estimateImpactTime(flight);
   const projectedSeconds = clamp(forecast ?? 5, 1, 18);
   const wind = flight.mode === 'daily' ? Math.sin(flight.elapsed * 1.7) * 0.95 : 0;
-  const projectedX = clamp(
+  const projectedX = wrapHorizontalPosition(
     flight.x + flight.vx * projectedSeconds + 0.5 * wind * projectedSeconds ** 2,
-    1,
-    99,
   );
   const speedMph = Math.hypot(flight.vx, flight.vy) * 2.23694;
   const angle = Math.abs(normalizedAngle(flight.angle));
@@ -183,7 +196,12 @@ function drawScene(
   const forecastColor = safeApproach ? '#65ed91' : '#fa5864';
   const impactX = (projectedX / 100) * width;
 
-  if (groundY < height + height * 0.18) {
+  const groundVisible = isGroundVisible(flight, width, height);
+  const cueY = groundVisible
+    ? clamp(groundY - 5, craftY + craftSize * 1.8, height - 26)
+    : height - 60;
+
+  if (groundVisible || groundY >= height) {
     context.save();
     context.setLineDash([5, 7]);
     context.globalAlpha = 0.74;
@@ -192,7 +210,7 @@ function drawScene(
       craftX,
       craftY + craftSize * 0.45,
       impactX,
-      Math.min(height - 8, groundY - 5),
+      cueY,
       forecastColor,
       1.5,
     );
@@ -201,66 +219,105 @@ function drawScene(
     const direction = Math.atan2(flight.vy, flight.vx);
     drawArrow(
       context,
-      craftX,
-      craftY + craftSize * 0.45,
-      craftX + Math.cos(direction) * craftSize * 2.3,
-      craftY + craftSize * 0.45 + Math.sin(direction) * craftSize * 2.3,
+      impactX - Math.cos(direction) * craftSize,
+      cueY - Math.sin(direction) * craftSize,
+      impactX,
+      cueY,
       forecastColor,
       1.5,
     );
   }
 
   const radians = (flight.angle * Math.PI) / 180;
-  const noseX = craftX + Math.sin(radians) * craftSize * 1.45;
-  const noseY = craftY - Math.cos(radians) * craftSize * 1.45;
-  drawArrow(context, craftX, craftY, noseX, noseY, '#f1d779', 2);
+  const angleArrowX = clamp(impactX + craftSize * 1.1, 12, width - 12);
+  const angleArrowLength = Math.max(14, craftSize * 0.8);
+  drawArrow(
+    context,
+    angleArrowX,
+    cueY,
+    clamp(angleArrowX + Math.sin(radians) * angleArrowLength, 12, width - 12),
+    cueY - Math.cos(radians) * angleArrowLength,
+    '#f1d779',
+    2,
+  );
 
-  context.save();
-  context.translate(craftX, craftY);
-  context.rotate(radians);
+  if (phase === 'crashed') {
+    const age = clamp(crashElapsed, 0, 1.5);
+    for (let index = 0; index < 10; index += 1) {
+      const direction = (Math.PI * 2 * index) / 10 + 0.14;
+      const distance = craftSize * (0.45 + age * (2.2 + (index % 3) * 0.25));
+      const x = craftX + Math.cos(direction) * distance;
+      const y = craftY + Math.sin(direction) * distance + age * age * 54;
+      const size = craftSize * (0.08 + (index % 3) * 0.025);
+      context.save();
+      context.globalAlpha = Math.max(0, 1 - age / 1.5);
+      context.translate(x, y);
+      context.rotate(direction + age * (index % 2 ? 3 : -3));
+      context.fillStyle = index % 3 === 0 ? '#fa5864' : '#dfe4ea';
+      context.beginPath();
+      context.moveTo(-size, -size * 0.35);
+      context.lineTo(size, 0);
+      context.lineTo(-size * 0.2, size * 0.55);
+      context.closePath();
+      context.fill();
+      context.restore();
+    }
+    if (age < 0.24) {
+      context.globalAlpha = 1 - age / 0.24;
+      context.fillStyle = '#ff9d54';
+      context.beginPath();
+      context.arc(craftX, craftY, craftSize * (0.5 + age * 3), 0, Math.PI * 2);
+      context.fill();
+      context.globalAlpha = 1;
+    }
+  } else {
+    context.save();
+    context.translate(craftX, craftY);
+    context.rotate(radians);
 
-  if (flight.thrust) {
-    const flameLength = craftSize * (0.86 + Math.sin(flight.elapsed * 28) * 0.12);
+    if (flight.thrust) {
+      const flameLength = craftSize * (0.86 + Math.sin(flight.elapsed * 28) * 0.12);
+      context.beginPath();
+      context.moveTo(-craftSize * 0.12, craftSize * 0.39);
+      context.lineTo(0, craftSize * 0.39 + flameLength);
+      context.lineTo(craftSize * 0.12, craftSize * 0.39);
+      context.closePath();
+      context.fillStyle = '#ff9d54';
+      context.fill();
+    }
+
     context.beginPath();
-    context.moveTo(-craftSize * 0.12, craftSize * 0.39);
-    context.lineTo(0, craftSize * 0.39 + flameLength);
-    context.lineTo(craftSize * 0.12, craftSize * 0.39);
+    context.moveTo(0, -craftSize * 0.58);
+    context.lineTo(craftSize * 0.43, craftSize * 0.3);
+    context.lineTo(craftSize * 0.3, craftSize * 0.42);
+    context.lineTo(-craftSize * 0.3, craftSize * 0.42);
+    context.lineTo(-craftSize * 0.43, craftSize * 0.3);
     context.closePath();
-    context.fillStyle = '#ff9d54';
+    context.fillStyle = '#dfe4ea';
+    context.strokeStyle = '#ffffff';
+    context.lineWidth = 1.5;
     context.fill();
+    context.stroke();
+
+    context.beginPath();
+    context.moveTo(-craftSize * 0.26, craftSize * 0.32);
+    context.lineTo(-craftSize * 0.53, craftSize * 0.68);
+    context.moveTo(craftSize * 0.26, craftSize * 0.32);
+    context.lineTo(craftSize * 0.53, craftSize * 0.68);
+    context.moveTo(-craftSize * 0.53, craftSize * 0.68);
+    context.lineTo(-craftSize * 0.27, craftSize * 0.68);
+    context.moveTo(craftSize * 0.53, craftSize * 0.68);
+    context.lineTo(craftSize * 0.27, craftSize * 0.68);
+    context.strokeStyle = '#dfe4ea';
+    context.lineWidth = 2;
+    context.stroke();
+
+    context.beginPath();
+    context.arc(0, craftSize * 0.08, craftSize * 0.1, 0, Math.PI * 2);
+    context.fillStyle = '#53616f';
+    context.fill();
+    context.restore();
   }
-
-  context.beginPath();
-  context.moveTo(0, -craftSize * 0.58);
-  context.lineTo(craftSize * 0.43, craftSize * 0.3);
-  context.lineTo(craftSize * 0.3, craftSize * 0.42);
-  context.lineTo(-craftSize * 0.3, craftSize * 0.42);
-  context.lineTo(-craftSize * 0.43, craftSize * 0.3);
-  context.closePath();
-  context.fillStyle = '#dfe4ea';
-  context.strokeStyle = '#ffffff';
-  context.lineWidth = 1.5;
-  context.fill();
-  context.stroke();
-
-  context.beginPath();
-  context.moveTo(-craftSize * 0.26, craftSize * 0.32);
-  context.lineTo(-craftSize * 0.53, craftSize * 0.68);
-  context.moveTo(craftSize * 0.26, craftSize * 0.32);
-  context.lineTo(craftSize * 0.53, craftSize * 0.68);
-  context.moveTo(-craftSize * 0.53, craftSize * 0.68);
-  context.lineTo(-craftSize * 0.27, craftSize * 0.68);
-  context.moveTo(craftSize * 0.53, craftSize * 0.68);
-  context.lineTo(craftSize * 0.27, craftSize * 0.68);
-  context.strokeStyle = '#dfe4ea';
-  context.lineWidth = 2;
-  context.stroke();
-
-  context.beginPath();
-  context.arc(0, craftSize * 0.08, craftSize * 0.1, 0, Math.PI * 2);
-  context.fillStyle = '#53616f';
-  context.fill();
-  context.restore();
 
   if (forecast && forecast < 10 && flight.vy > 3.5) {
     context.beginPath();
@@ -273,9 +330,10 @@ function drawScene(
 
 type Props = {
   flightRef: MutableRefObject<Flight>;
+  phase: Phase;
 };
 
-export default function LanderScene({ flightRef }: Props) {
+export default function LanderScene({ flightRef, phase }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
   useEffect(() => {
@@ -287,6 +345,7 @@ export default function LanderScene({ flightRef }: Props) {
     let width = 0;
     let height = 0;
     let pixelRatio = 1;
+    const crashStartedAt = phase === 'crashed' ? performance.now() : 0;
 
     const resize = () => {
       const bounds = canvas.getBoundingClientRect();
@@ -302,8 +361,15 @@ export default function LanderScene({ flightRef }: Props) {
     observer.observe(canvas);
     resize();
 
-    const draw = () => {
-      drawScene(context, width, height, flightRef.current);
+    const draw = (now: number) => {
+      drawScene(
+        context,
+        width,
+        height,
+        flightRef.current,
+        phase,
+        phase === 'crashed' ? (now - crashStartedAt) / 1000 : 0,
+      );
       frame = window.requestAnimationFrame(draw);
     };
     frame = window.requestAnimationFrame(draw);
@@ -312,7 +378,7 @@ export default function LanderScene({ flightRef }: Props) {
       observer.disconnect();
       window.cancelAnimationFrame(frame);
     };
-  }, [flightRef]);
+  }, [flightRef, phase]);
 
   return (
     <canvas
