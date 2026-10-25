@@ -1,0 +1,28 @@
+kind = "web"
+previewPath = "/"
+title = "Unstable Lander"
+description = "A browser-based lunar landing game: pilot a fragile lander with arrow-key thrusters, stick a precision landing, and chase flight stats across daily challenge runs."
+version = "1.0.0"
+id = "artifacts/unstable-lander"
+router = "path"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 23876
+
+[services.development]
+run = "pnpm --filter @workspace/unstable-lander run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/unstable-lander", "run", "build" ]
+serve = "static"
+publicDir = "artifacts/unstable-lander/dist/public"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "23876"
+BASE_PATH = "/"
